@@ -159,7 +159,7 @@ async function connectToWhatsApp(sessionId: string, io: Server) {
                 keys: makeCacheableSignalKeyStore(state.keys, logger),
             },
             logger,
-            browser: ["WhatsApp Insight", "Chrome", "1.0.0"]
+            browser: ["WhatsApp Insights", "Chrome", "1.0.0"]
         });
 
         session.sock.ev.on('creds.update', saveCreds);

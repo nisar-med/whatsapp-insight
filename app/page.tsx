@@ -49,7 +49,7 @@ function getOrCreateSessionId() {
   return newSessionId;
 }
 
-export default function WhatsAppInsight() {
+export default function WhatsAppInsights() {
   const [status, setStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'qr_timeout'>('disconnected');
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -190,7 +190,7 @@ export default function WhatsAppInsight() {
           <div className="bg-white/20 p-2 rounded-full">
             <MessageSquare className="w-6 h-6" />
           </div>
-          <h1 className="text-xl font-bold tracking-tight">WhatsApp Chat Insight</h1>
+          <h1 className="text-xl font-bold tracking-tight">WhatsApp Chat Insights</h1>
         </div>
         <div className="flex items-center gap-4">
           <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-sm font-medium ${
@@ -330,7 +330,7 @@ export default function WhatsAppInsight() {
               </div>
               <div>
                 <h2 className="text-lg font-bold">Chat Assistant</h2>
-                <p className="text-xs text-gray-500 italic">Powered by Gemini AI</p>
+                <p className="text-xs text-gray-500 italic">Answers based on your synced messages</p>
               </div>
             </div>
 
