@@ -87,6 +87,10 @@ export default function WhatsAppInsights() {
       setMessages(prev => [msg, ...prev].slice(0, 1000));
     });
 
+    socket.on('whatsapp:messages', (msgs: Message[]) => {
+      setMessages(msgs);
+    });
+
     socket.on('whatsapp:chats', (newChats: Chat[]) => {
       setChats(newChats);
     });
