@@ -17,8 +17,11 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
-// Initialize Gemini
-const genAI = new GoogleGenAI({ apiKey: process.env.NEXT_PUBLIC_GEMINI_API_KEY! });
+function getGeminiClient() {
+  const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+  if (!apiKey) return null;
+  return new GoogleGenAI({ apiKey });
+}
 
 interface Message {
   id: string;
@@ -142,6 +145,12 @@ export default function WhatsAppInsights() {
 
   const handleAskAi = async () => {
     if (!query.trim()) return;
+
+    const genAI = getGeminiClient();
+    if (!genAI) {
+      setAiResponse('Gemini API key is not configured. Set NEXT_PUBLIC_GEMINI_API_KEY and reload the app.');
+      return;
+    }
     
     setIsAiLoading(true);
     setAiResponse(null);
