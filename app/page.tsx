@@ -139,6 +139,10 @@ export default function WhatsAppInsights() {
 
   const handleAskAi = async () => {
     if (!query.trim()) return;
+    if (!sessionId) {
+      setAiResponse('Session is not initialized. Please refresh and try again.');
+      return;
+    }
 
     
     setIsAiLoading(true);
@@ -151,6 +155,7 @@ export default function WhatsAppInsights() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
+          sid: sessionId,
           query,
           messages,
         }),
