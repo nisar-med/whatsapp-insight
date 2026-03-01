@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /* eslint-disable react-hooks/rules-of-hooks */
 import express from 'express';
 import { createServer } from 'http';

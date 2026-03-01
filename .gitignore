@@ -6,3 +6,5 @@ coverage/
 .env*
 !.env.example
 auth_info/
+dist/
+*.tsbuildinfo
