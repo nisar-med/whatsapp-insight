@@ -3,6 +3,7 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import next from 'next';
+import crypto from 'crypto';
 import { 
     makeWASocket, 
     DisconnectReason, 
@@ -10,7 +11,6 @@ import {
     fetchLatestBaileysVersion,
     makeCacheableSignalKeyStore
 } from '@whiskeysockets/baileys';
-import { Boom } from '@hapi/boom';
 import qrcode from 'qrcode';
 import pino from 'pino';
 import path from 'path';
@@ -21,38 +21,137 @@ const app = next({ dev });
 const handle = app.getRequestHandler();
 
 const port = 3000;
+const MESSAGE_CACHE_LIMIT = 1000;
+const SESSION_IDLE_TIMEOUT_MS = 1000 * 60 * 30;
+const SESSION_CLEANUP_INTERVAL_MS = 1000 * 60 * 5;
+const SESSION_ID_REGEX = /^[a-zA-Z0-9_-]{8,128}$/;
 
 // Logger
 const logger = pino({ level: 'info' });
 
-// In-memory store for messages (simplified)
-const messageStore: any[] = [];
-const chatStore: any = {};
+type SessionStatus = 'disconnected' | 'connecting' | 'connected' | 'qr_timeout';
 
-async function startServer() {
-    await app.prepare();
-    const expressApp = express();
-    const httpServer = createServer(expressApp);
-    const io = new Server(httpServer, {
-        cors: {
-            origin: "*",
-            methods: ["GET", "POST"]
+type WhatsAppSession = {
+    id: string;
+    authPath: string;
+    sock: any;
+    isConnecting: boolean;
+    status: SessionStatus;
+    qrCode: string | null;
+    messageStore: any[];
+    chatStore: Record<string, any>;
+    lastActivity: number;
+};
+
+const sessions = new Map<string, WhatsAppSession>();
+
+function getSessionRoom(sessionId: string) {
+    return `session:${sessionId}`;
+}
+
+function getOrCreateSession(sessionId: string): WhatsAppSession {
+    const existing = sessions.get(sessionId);
+    if (existing) return existing;
+
+    const authPath = path.join(process.cwd(), 'auth_info', sessionId);
+    const created: WhatsAppSession = {
+        id: sessionId,
+        authPath,
+        sock: null,
+        isConnecting: false,
+        status: 'disconnected',
+        qrCode: null,
+        messageStore: [],
+        chatStore: {},
+        lastActivity: Date.now()
+    };
+    sessions.set(sessionId, created);
+    return created;
+}
+
+function touchSession(session: WhatsAppSession) {
+    session.lastActivity = Date.now();
+}
+
+function isValidSessionId(value: unknown): value is string {
+    return typeof value === 'string' && SESSION_ID_REGEX.test(value);
+}
+
+function getRequestSessionId(req: express.Request) {
+    const candidate = req.query.sid;
+    if (Array.isArray(candidate)) return candidate[0];
+    return candidate;
+}
+
+function getSocketSessionId(socket: any) {
+    const authSid = socket?.handshake?.auth?.sid;
+    if (typeof authSid === 'string') return authSid;
+
+    const querySid = socket?.handshake?.query?.sid;
+    if (typeof querySid === 'string') return querySid;
+    if (Array.isArray(querySid)) return querySid[0];
+    return undefined;
+}
+
+function resolveSessionIdFromRequest(req: express.Request, res: express.Response) {
+    const sessionId = getRequestSessionId(req);
+    if (!isValidSessionId(sessionId)) {
+        res.status(400).json({
+            error: 'Invalid or missing session id. Pass a valid sid query parameter.'
+        });
+        return null;
+    }
+    return sessionId;
+}
+
+function hasRoomClients(io: Server, sessionId: string) {
+    const room = io.sockets.adapter.rooms.get(getSessionRoom(sessionId));
+    return !!room && room.size > 0;
+}
+
+function stopSocket(session: WhatsAppSession) {
+    try {
+        if (session.sock) {
+            session.sock.end();
         }
-    });
+    } catch (e) {}
+    session.sock = null;
+    session.isConnecting = false;
+}
 
-    // WhatsApp logic
-    let sock: any;
-    let isConnecting = false;
-    
-    const connectToWhatsApp = async () => {
-        if (isConnecting) return;
-        if (sock?.user) return;
+function removeSession(sessionId: string, options?: { removeAuthData?: boolean }) {
+    const session = sessions.get(sessionId);
+    if (!session) return;
 
-        isConnecting = true;
-        const { state, saveCreds } = await useMultiFileAuthState('auth_info');
+    stopSocket(session);
+
+    if (options?.removeAuthData && fs.existsSync(session.authPath)) {
+        fs.rmSync(session.authPath, { recursive: true, force: true });
+    }
+
+    sessions.delete(sessionId);
+}
+
+async function connectToWhatsApp(sessionId: string, io: Server) {
+    const session = getOrCreateSession(sessionId);
+    touchSession(session);
+
+    if (session.isConnecting) return;
+    if (session.sock?.user) return;
+
+    session.isConnecting = true;
+    session.status = 'connecting';
+    io.to(getSessionRoom(sessionId)).emit('whatsapp:status', session.status);
+
+    if (!fs.existsSync(session.authPath)) {
+        fs.mkdirSync(session.authPath, { recursive: true });
+    }
+
+    try {
+        const { state, saveCreds } = await useMultiFileAuthState(session.authPath);
         const { version } = await fetchLatestBaileysVersion();
-        
-        sock = makeWASocket({
+
+        session.sock = makeWASocket({
             version,
             printQRInTerminal: false,
             auth: {
@@ -63,42 +162,55 @@ async function startServer() {
             browser: ["WhatsApp Insight", "Chrome", "1.0.0"]
         });
 
-        sock.ev.on('creds.update', saveCreds);
+        session.sock.ev.on('creds.update', saveCreds);
 
-        sock.ev.on('connection.update', async (update: any) => {
+        session.sock.ev.on('connection.update', async (update: any) => {
             const { connection, lastDisconnect, qr } = update;
-            
+
+            touchSession(session);
+
             if (qr) {
                 const qrDataUrl = await qrcode.toDataURL(qr);
-                io.emit('whatsapp:qr', qrDataUrl);
+                session.qrCode = qrDataUrl;
+                session.status = 'disconnected';
+                io.to(getSessionRoom(sessionId)).emit('whatsapp:qr', qrDataUrl);
+                io.to(getSessionRoom(sessionId)).emit('whatsapp:status', session.status);
             }
 
             if (connection === 'close') {
-                isConnecting = false;
+                session.isConnecting = false;
+                session.sock = null;
+
                 const error = lastDisconnect?.error as any;
                 const statusCode = error?.output?.statusCode;
                 const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
                 const errorMessage = error?.message || error?.toString() || '';
-                
-                console.log('connection closed due to ', errorMessage);
-                
+
+                console.log(`session ${sessionId} closed due to`, errorMessage);
+
                 if (errorMessage.includes('QR refs attempts ended')) {
-                    console.log('QR attempts ended. Waiting for user to retry.');
-                    io.emit('whatsapp:status', 'qr_timeout');
+                    session.status = 'qr_timeout';
                 } else {
-                    io.emit('whatsapp:status', 'disconnected');
-                    if (shouldReconnect) {
-                        setTimeout(() => connectToWhatsApp(), 3000);
-                    }
+                    session.status = 'disconnected';
+                }
+
+                io.to(getSessionRoom(sessionId)).emit('whatsapp:status', session.status);
+
+                if (shouldReconnect && hasRoomClients(io, sessionId)) {
+                    setTimeout(() => connectToWhatsApp(sessionId, io), 3000);
                 }
             } else if (connection === 'open') {
-                isConnecting = false;
-                console.log('opened connection');
-                io.emit('whatsapp:status', 'connected');
+                session.isConnecting = false;
+                session.status = 'connected';
+                session.qrCode = null;
+                console.log(`session ${sessionId} opened connection`);
+                io.to(getSessionRoom(sessionId)).emit('whatsapp:status', session.status);
             }
         });
 
-        sock.ev.on('messages.upsert', async (m: any) => {
+        session.sock.ev.on('messages.upsert', async (m: any) => {
+            touchSession(session);
+
             if (m.type === 'notify') {
                 for (const msg of m.messages) {
                     if (!msg.key.fromMe && msg.message) {
@@ -108,63 +220,145 @@ async function startServer() {
                                 id: msg.key.id,
                                 remoteJid: msg.key.remoteJid,
                                 pushName: msg.pushName,
-                                text: text,
+                                text,
                                 timestamp: msg.messageTimestamp
                             };
-                            messageStore.push(messageData);
-                            // Keep only last 1000 messages
-                            if (messageStore.length > 1000) messageStore.shift();
-                            io.emit('whatsapp:new_message', messageData);
+                            session.messageStore.push(messageData);
+                            if (session.messageStore.length > MESSAGE_CACHE_LIMIT) {
+                                session.messageStore.shift();
+                            }
+                            io.to(getSessionRoom(sessionId)).emit('whatsapp:new_message', messageData);
                         }
                     }
                 }
             }
         });
 
-        sock.ev.on('chats.upsert', (chats: any) => {
-            chats.forEach((chat: any) => {
-                chatStore[chat.id] = chat;
-            });
-            io.emit('whatsapp:chats', Object.values(chatStore));
-        });
-    };
+        session.sock.ev.on('chats.upsert', (chats: any) => {
+            touchSession(session);
 
-    io.on('connection', (socket) => {
-        console.log('Client connected');
-        if (!sock?.user && !isConnecting) {
-            connectToWhatsApp();
+            chats.forEach((chat: any) => {
+                session.chatStore[chat.id] = chat;
+            });
+            io.to(getSessionRoom(sessionId)).emit('whatsapp:chats', Object.values(session.chatStore));
+        });
+    } catch (error) {
+        session.isConnecting = false;
+        session.status = 'disconnected';
+        session.sock = null;
+        io.to(getSessionRoom(sessionId)).emit('whatsapp:status', session.status);
+        console.error(`failed to connect session ${sessionId}:`, error);
+    }
+}
+
+async function startServer() {
+    await app.prepare();
+    const expressApp = express();
+    expressApp.use(express.json());
+    const httpServer = createServer(expressApp);
+    const io = new Server(httpServer, {
+        cors: {
+            origin: "*",
+            methods: ["GET", "POST"]
         }
     });
 
+    io.on('connection', (socket) => {
+        const sessionId = getSocketSessionId(socket);
+
+        if (!isValidSessionId(sessionId)) {
+            socket.emit('whatsapp:error', 'Invalid or missing session id');
+            socket.disconnect(true);
+            return;
+        }
+
+        const session = getOrCreateSession(sessionId);
+        touchSession(session);
+
+        socket.join(getSessionRoom(sessionId));
+        socket.emit('whatsapp:status', session.status);
+        if (session.qrCode) {
+            socket.emit('whatsapp:qr', session.qrCode);
+        }
+        socket.emit('whatsapp:chats', Object.values(session.chatStore));
+
+        if (!session.sock?.user && !session.isConnecting) {
+            connectToWhatsApp(sessionId, io);
+        }
+
+        socket.on('disconnect', () => {
+            const existing = sessions.get(sessionId);
+            if (existing) {
+                touchSession(existing);
+            }
+        });
+    });
+
+    setInterval(() => {
+        const now = Date.now();
+        for (const [sessionId, session] of sessions.entries()) {
+            const hasClients = hasRoomClients(io, sessionId);
+            if (!hasClients && now - session.lastActivity > SESSION_IDLE_TIMEOUT_MS) {
+                removeSession(sessionId, { removeAuthData: false });
+            }
+        }
+    }, SESSION_CLEANUP_INTERVAL_MS);
+
     // API Endpoints
     expressApp.get('/api/whatsapp/messages', (req, res) => {
-        res.json(messageStore);
+        const sessionId = resolveSessionIdFromRequest(req, res);
+        if (!sessionId) return;
+
+        const session = getOrCreateSession(sessionId);
+        touchSession(session);
+        res.json(session.messageStore);
     });
 
     expressApp.get('/api/whatsapp/status', (req, res) => {
-        res.json({ status: sock?.user ? 'connected' : 'disconnected', user: sock?.user });
+        const sessionId = resolveSessionIdFromRequest(req, res);
+        if (!sessionId) return;
+
+        const session = getOrCreateSession(sessionId);
+        touchSession(session);
+        res.json({ status: session.status, user: session.sock?.user || null });
     });
 
     expressApp.post('/api/whatsapp/retry', (req, res) => {
-        connectToWhatsApp();
+        const sessionId = resolveSessionIdFromRequest(req, res);
+        if (!sessionId) return;
+
+        const session = getOrCreateSession(sessionId);
+        touchSession(session);
+        connectToWhatsApp(sessionId, io);
         res.json({ success: true });
     });
 
     expressApp.post('/api/whatsapp/reset', async (req, res) => {
-        try {
-            if (sock) {
-                sock.logout();
-                sock.end();
-            }
-        } catch (e) {}
-        
-        const authPath = path.join(process.cwd(), 'auth_info');
-        if (fs.existsSync(authPath)) {
-            fs.rmSync(authPath, { recursive: true, force: true });
+        const sessionId = resolveSessionIdFromRequest(req, res);
+        if (!sessionId) return;
+
+        const existing = sessions.get(sessionId);
+        if (existing?.sock) {
+            try {
+                await existing.sock.logout();
+            } catch (e) {}
         }
-        
-        connectToWhatsApp();
+
+        removeSession(sessionId, { removeAuthData: true });
+        connectToWhatsApp(sessionId, io);
         res.json({ success: true });
+    });
+
+    expressApp.post('/api/session', (req, res) => {
+        const requested = req.body?.sid;
+        if (isValidSessionId(requested)) {
+            getOrCreateSession(requested);
+            return res.json({ sid: requested });
+        }
+
+        const sid = crypto.randomUUID().replace(/-/g, '_');
+        getOrCreateSession(sid);
+        return res.json({ sid });
     });
 
     // Next.js handler

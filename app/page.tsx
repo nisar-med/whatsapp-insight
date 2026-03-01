@@ -33,11 +33,28 @@ interface Chat {
   name?: string;
 }
 
+const SESSION_STORAGE_KEY = 'wa_insight_session_id';
+
+function getOrCreateSessionId() {
+  if (typeof window === 'undefined') return null;
+
+  const existing = localStorage.getItem(SESSION_STORAGE_KEY);
+  if (existing) return existing;
+
+  const newSessionId = window.crypto?.randomUUID
+    ? window.crypto.randomUUID().replace(/-/g, '_')
+    : `sid_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+  localStorage.setItem(SESSION_STORAGE_KEY, newSessionId);
+  return newSessionId;
+}
+
 export default function WhatsAppInsight() {
   const [status, setStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'qr_timeout'>('disconnected');
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [chats, setChats] = useState<Chat[]>([]);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [aiResponse, setAiResponse] = useState<string | null>(null);
   const [isAiLoading, setIsAiLoading] = useState(false);
@@ -45,8 +62,13 @@ export default function WhatsAppInsight() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    const sid = getOrCreateSessionId();
+    if (!sid) return;
+
+    setSessionId(sid);
+
     // Connect to the server
-    const socket = io();
+    const socket = io({ auth: { sid } });
     socketRef.current = socket;
 
     socket.on('connect', () => {
@@ -73,14 +95,15 @@ export default function WhatsAppInsight() {
     });
 
     // Initial fetch
-    fetch('/api/whatsapp/messages')
+    fetch(`/api/whatsapp/messages?sid=${encodeURIComponent(sid)}`)
       .then(res => res.json())
       .then(data => setMessages(data));
 
-    fetch('/api/whatsapp/status')
+    fetch(`/api/whatsapp/status?sid=${encodeURIComponent(sid)}`)
       .then(res => res.json())
       .then(data => {
         if (data.status === 'connected') setStatus('connected');
+        if (data.status === 'qr_timeout') setStatus('qr_timeout');
       });
 
     return () => {
@@ -89,10 +112,12 @@ export default function WhatsAppInsight() {
   }, []);
 
   const handleRetry = async () => {
+    if (!sessionId) return;
+
     setStatus('connecting');
     setQrCode(null);
     try {
-      await fetch('/api/whatsapp/retry', { method: 'POST' });
+      await fetch(`/api/whatsapp/retry?sid=${encodeURIComponent(sessionId)}`, { method: 'POST' });
     } catch (error) {
       console.error('Retry failed:', error);
       setStatus('disconnected');
@@ -100,13 +125,15 @@ export default function WhatsAppInsight() {
   };
 
   const handleReset = async () => {
+    if (!sessionId) return;
     if (!confirm('Are you sure you want to reset the session? This will disconnect your current WhatsApp account.')) return;
     
     setStatus('connecting');
     setQrCode(null);
     setMessages([]);
+    setChats([]);
     try {
-      await fetch('/api/whatsapp/reset', { method: 'POST' });
+      await fetch(`/api/whatsapp/reset?sid=${encodeURIComponent(sessionId)}`, { method: 'POST' });
     } catch (error) {
       console.error('Reset failed:', error);
       setStatus('disconnected');
