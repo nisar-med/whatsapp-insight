@@ -9,12 +9,53 @@ type ChatMessage = {
 };
 
 type AskAiRequest = {
+  sid?: string;
   query?: string;
   messages?: ChatMessage[];
 };
 
 const MODEL = 'gemini-3-flash-preview';
 const MAX_MESSAGES = 500;
+const SESSION_ID_REGEX = /^[a-zA-Z0-9_-]{8,128}$/;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 20;
+
+type RateLimitBucket = {
+  count: number;
+  resetAt: number;
+};
+
+const rateLimitStore =
+  ((globalThis as { __waAiRateLimitStore?: Map<string, RateLimitBucket> }).__waAiRateLimitStore ??=
+    new Map<string, RateLimitBucket>());
+
+function validateSessionId(sid: string | undefined): sid is string {
+  return typeof sid === 'string' && SESSION_ID_REGEX.test(sid);
+}
+
+function consumeRateLimit(sessionId: string) {
+  const now = Date.now();
+  const bucket = rateLimitStore.get(sessionId);
+
+  if (!bucket || bucket.resetAt <= now) {
+    rateLimitStore.set(sessionId, {
+      count: 1,
+      resetAt: now + RATE_LIMIT_WINDOW_MS,
+    });
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+
+  if (bucket.count >= RATE_LIMIT_MAX_REQUESTS) {
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(1, Math.ceil((bucket.resetAt - now) / 1000)),
+    };
+  }
+
+  bucket.count += 1;
+  rateLimitStore.set(sessionId, bucket);
+  return { allowed: true, retryAfterSeconds: 0 };
+}
 
 export async function POST(request: Request) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -35,6 +76,24 @@ export async function POST(request: Request) {
   const query = payload.query?.trim();
   if (!query) {
     return NextResponse.json({ error: 'Query is required.' }, { status: 400 });
+  }
+
+  const sessionId = payload.sid?.trim();
+  if (!validateSessionId(sessionId)) {
+    return NextResponse.json({ error: 'Unauthorized request.' }, { status: 401 });
+  }
+
+  const rateLimit = consumeRateLimit(sessionId);
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      { error: 'Rate limit exceeded. Please try again shortly.' },
+      {
+        status: 429,
+        headers: {
+          'Retry-After': String(rateLimit.retryAfterSeconds),
+        },
+      },
+    );
   }
 
   const messages = Array.isArray(payload.messages) ? payload.messages.slice(0, MAX_MESSAGES) : [];
