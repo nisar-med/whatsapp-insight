@@ -1,14 +1,36 @@
-# Run WhatsApp Insights locally
+# WhatsApp Insights
 
-This repository contains everything you need to run the app locally.
+## Install
 
-## Run Locally
+Runtime: Node.js 22 or newer.
 
-**Prerequisites:**  Node.js
+```bash
+npm install -g whatsapp-insights@latest
+# or: npx whatsapp-insights@latest
 
+whatsapp-insights
+```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+This setup installs the application and runs it as a web application.
+
+## Environment variable
+
+Set your API key before running the app.
+
+### macOS/Linux
+
+```bash
+export GEMINI_API_KEY="your_api_key_here"
+```
+
+### Windows (PowerShell)
+
+```powershell
+$env:GEMINI_API_KEY="your_api_key_here"
+```
+
+### Windows (Command Prompt)
+
+```bat
+set GEMINI_API_KEY=your_api_key_here
+```

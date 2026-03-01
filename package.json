@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-insights",
-  "version": "0.1.0-alpha.6",
+  "version": "0.2.0",
   "type": "module",
   "main": "dist/server.js",
   "bin": {
