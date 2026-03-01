@@ -168,7 +168,7 @@ async function startServer() {
     });
 
     // Next.js handler
-    expressApp.all('*', (req, res) => {
+    expressApp.all('/{*any}', (req, res) => {
         return handle(req, res);
     });
 
