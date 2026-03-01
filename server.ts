@@ -281,7 +281,6 @@ async function connectToWhatsApp(sessionId: string, io: Server) {
 async function startServer() {
     await app.prepare();
     const expressApp = express();
-    expressApp.use(express.json());
     const httpServer = createServer(expressApp);
     const io = new Server(httpServer, {
         cors: {
@@ -376,7 +375,7 @@ async function startServer() {
         res.json({ success: true });
     });
 
-    expressApp.post('/api/session', (req, res) => {
+    expressApp.post('/api/session', express.json(), (req, res) => {
         const requested = req.body?.sid;
         if (isValidSessionId(requested)) {
             getOrCreateSession(requested);
