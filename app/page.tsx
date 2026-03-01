@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { GoogleGenAI } from "@google/genai";
 import { 
   MessageSquare, 
   QrCode, 
@@ -17,11 +16,6 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
-function getGeminiClient() {
-  const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
-  if (!apiKey) return null;
-  return new GoogleGenAI({ apiKey });
-}
 
 interface Message {
   id: string;
@@ -146,46 +140,32 @@ export default function WhatsAppInsights() {
   const handleAskAi = async () => {
     if (!query.trim()) return;
 
-    const genAI = getGeminiClient();
-    if (!genAI) {
-      setAiResponse('Gemini API key is not configured. Set NEXT_PUBLIC_GEMINI_API_KEY and reload the app.');
-      return;
-    }
     
     setIsAiLoading(true);
     setAiResponse(null);
 
     try {
-      // Prepare context from messages
-      const context = messages
-        .map(m => `[${new Date(m.timestamp * 1000).toLocaleString()}] ${m.pushName || m.remoteJid}: ${m.text}`)
-        .join('\n');
-
-      const prompt = `
-        You are an assistant that helps users understand their WhatsApp messages.
-        Below is a list of recent messages from the user's WhatsApp.
-        Answer the user's question based ONLY on these messages.
-        If the information is not in the messages, say you don't know.
-        
-        Recent Messages:
-        ${context}
-        
-        User Question: ${query}
-      `;
-
-      const result = await genAI.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: prompt }]
-          }
-        ]
+      const response = await fetch('/api/ai', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query,
+          messages,
+        }),
       });
-      setAiResponse(result.text || "No response generated.");
+
+      const data = await response.json();
+      if (!response.ok) {
+        setAiResponse(data.error || 'Sorry, I encountered an error while processing your request.');
+        return;
+      }
+
+      setAiResponse(data.answer || 'No response generated.');
     } catch (error) {
-      console.error("AI Error:", error);
-      setAiResponse("Sorry, I encountered an error while processing your request.");
+      console.error('AI Error:', error);
+      setAiResponse('Sorry, I encountered an error while processing your request.');
     } finally {
       setIsAiLoading(false);
     }
