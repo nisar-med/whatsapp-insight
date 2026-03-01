@@ -131,6 +131,19 @@ function resolveSessionIdFromRequest(req: express.Request, res: express.Response
     return sessionId;
 }
 
+function extractMessageData(msg: any) {
+    if (msg.key.fromMe || !msg.message) return null;
+    const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
+    if (!text) return null;
+    return {
+        id: msg.key.id,
+        remoteJid: msg.key.remoteJid,
+        pushName: msg.pushName,
+        text,
+        timestamp: msg.messageTimestamp
+    };
+}
+
 function hasRoomClients(io: Server, sessionId: string) {
     const room = io.sockets.adapter.rooms.get(getSessionRoom(sessionId));
     return !!room && room.size > 0;
@@ -235,28 +248,46 @@ async function connectToWhatsApp(sessionId: string, io: Server) {
             }
         });
 
+        session.sock.ev.on('messaging-history.set', ({ messages: historyMessages, chats: historyChats }: any) => {
+            touchSession(session);
+
+            if (historyChats?.length) {
+                historyChats.forEach((chat: any) => {
+                    session.chatStore[chat.id] = chat;
+                });
+                io.to(getSessionRoom(sessionId)).emit('whatsapp:chats', Object.values(session.chatStore));
+            }
+
+            if (historyMessages?.length) {
+                const newMessages = historyMessages.map(extractMessageData).filter(Boolean);
+
+                if (newMessages.length > 0) {
+                    session.messageStore = [...session.messageStore, ...newMessages].slice(0, MESSAGE_CACHE_LIMIT);
+                    io.to(getSessionRoom(sessionId)).emit('whatsapp:messages', session.messageStore);
+                }
+            }
+        });
+
         session.sock.ev.on('messages.upsert', async (m: any) => {
             touchSession(session);
 
             if (m.type === 'notify') {
                 for (const msg of m.messages) {
-                    if (!msg.key.fromMe && msg.message) {
-                        const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
-                        if (text) {
-                            const messageData = {
-                                id: msg.key.id,
-                                remoteJid: msg.key.remoteJid,
-                                pushName: msg.pushName,
-                                text,
-                                timestamp: msg.messageTimestamp
-                            };
-                            session.messageStore.push(messageData);
-                            if (session.messageStore.length > MESSAGE_CACHE_LIMIT) {
-                                session.messageStore.shift();
-                            }
-                            io.to(getSessionRoom(sessionId)).emit('whatsapp:new_message', messageData);
+                    const messageData = extractMessageData(msg);
+                    if (messageData) {
+                        session.messageStore.push(messageData);
+                        if (session.messageStore.length > MESSAGE_CACHE_LIMIT) {
+                            session.messageStore.shift();
                         }
+                        io.to(getSessionRoom(sessionId)).emit('whatsapp:new_message', messageData);
                     }
+                }
+            } else if (m.type === 'append') {
+                const appendedMessages = m.messages.map(extractMessageData).filter(Boolean);
+
+                if (appendedMessages.length > 0) {
+                    session.messageStore = [...session.messageStore, ...appendedMessages].slice(0, MESSAGE_CACHE_LIMIT);
+                    io.to(getSessionRoom(sessionId)).emit('whatsapp:messages', session.messageStore);
                 }
             }
         });
