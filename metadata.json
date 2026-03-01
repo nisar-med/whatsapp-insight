@@ -1,0 +1,5 @@
+{
+  "name": "WhatsApp Chat Insight",
+  "description": "Connect your WhatsApp and ask questions about your chats using Gemini AI.",
+  "requestFramePermissions": []
+}
