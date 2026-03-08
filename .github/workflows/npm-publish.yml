@@ -1,4 +1,4 @@
-name: Release on feat merge
+name: Release on merge
 
 on:
   pull_request:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   release:
-    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'feat/'))
+    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.merged == true && (startsWith(github.event.pull_request.title, 'feat:') || startsWith(github.event.pull_request.title, 'fix:')))
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -32,10 +32,33 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Bump minor version
+      - name: Determine bump type
+        id: bump
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            MSG=$(git log -1 --pretty=%s)
+          else
+            MSG="${{ github.event.pull_request.title }}"
+          fi
+
+          if [[ "$MSG" == feat:* ]]; then
+            echo "type=minor" >> $GITHUB_OUTPUT
+          elif [[ "$MSG" == fix:* ]]; then
+            echo "type=patch" >> $GITHUB_OUTPUT
+          else
+            echo "skip=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Abort if no releasable commit
+        if: steps.bump.outputs.skip == 'true'
+        run: |
+          echo "Last commit is not feat: or fix: — skipping release."
+          exit 1
+
+      - name: Bump version
         id: version
         run: |
-          npm version minor --no-git-tag-version
+          npm version ${{ steps.bump.outputs.type }} --no-git-tag-version
           echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
 
       - name: Commit and tag
