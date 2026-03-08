@@ -16,7 +16,7 @@
     "README.md"
   ],
   "scripts": {
-    "dev": "WHATSAPP_INSIGHTS_DEV=true node server.ts",
+    "dev": "WHATSAPP_INSIGHTS_DEV=true tsx watch server.ts",
     "build": "next build",
     "build:app": "next build",
     "build:server": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.server.json",
@@ -60,6 +60,7 @@
     "eslint-config-next": "16.0.8",
     "firebase-tools": "^15.0.0",
     "tailwindcss": "4.1.11",
+    "tsx": "^4.21.0",
     "tw-animate-css": "^1.4.0",
     "typescript": "5.9.3"
   }

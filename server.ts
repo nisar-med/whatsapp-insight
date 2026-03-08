@@ -76,6 +76,27 @@ function getSessionRoom(sessionId: string) {
     return `session:${sessionId}`;
 }
 
+function loadMessageStore(authPath: string): any[] {
+    try {
+        const filePath = path.join(authPath, 'messages.json');
+        if (fs.existsSync(filePath)) {
+            return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        }
+    } catch (e) {}
+    return [];
+}
+
+function saveMessageStore(session: WhatsAppSession) {
+    try {
+        if (!fs.existsSync(session.authPath)) return;
+        fs.writeFileSync(
+            path.join(session.authPath, 'messages.json'),
+            JSON.stringify(session.messageStore),
+            'utf-8'
+        );
+    } catch (e) {}
+}
+
 function getOrCreateSession(sessionId: string): WhatsAppSession {
     const existing = sessions.get(sessionId);
     if (existing) return existing;
@@ -88,7 +109,7 @@ function getOrCreateSession(sessionId: string): WhatsAppSession {
         isConnecting: false,
         status: 'disconnected',
         qrCode: null,
-        messageStore: [],
+        messageStore: loadMessageStore(authPath),
         chatStore: {},
         lastActivity: Date.now()
     };
@@ -140,7 +161,7 @@ function extractMessageData(msg: any) {
         remoteJid: msg.key.remoteJid,
         pushName: msg.pushName,
         text,
-        timestamp: msg.messageTimestamp
+        timestamp: Number(msg.messageTimestamp)
     };
 }
 
@@ -263,6 +284,7 @@ async function connectToWhatsApp(sessionId: string, io: Server) {
 
                 if (newMessages.length > 0) {
                     session.messageStore = [...session.messageStore, ...newMessages].slice(0, MESSAGE_CACHE_LIMIT);
+                    saveMessageStore(session);
                     io.to(getSessionRoom(sessionId)).emit('whatsapp:messages', session.messageStore);
                 }
             }
@@ -279,6 +301,7 @@ async function connectToWhatsApp(sessionId: string, io: Server) {
                         if (session.messageStore.length > MESSAGE_CACHE_LIMIT) {
                             session.messageStore.shift();
                         }
+                        saveMessageStore(session);
                         io.to(getSessionRoom(sessionId)).emit('whatsapp:new_message', messageData);
                     }
                 }
@@ -287,6 +310,7 @@ async function connectToWhatsApp(sessionId: string, io: Server) {
 
                 if (appendedMessages.length > 0) {
                     session.messageStore = [...session.messageStore, ...appendedMessages].slice(0, MESSAGE_CACHE_LIMIT);
+                    saveMessageStore(session);
                     io.to(getSessionRoom(sessionId)).emit('whatsapp:messages', session.messageStore);
                 }
             }
@@ -338,6 +362,7 @@ async function startServer() {
             socket.emit('whatsapp:qr', session.qrCode);
         }
         socket.emit('whatsapp:chats', Object.values(session.chatStore));
+        socket.emit('whatsapp:messages', session.messageStore);
 
         if (!session.sock?.user && !session.isConnecting) {
             connectToWhatsApp(sessionId, io);
