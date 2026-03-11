@@ -8,7 +8,7 @@ on:
 
 jobs:
   release:
-    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.merged == true && (startsWith(github.event.pull_request.title, 'feat:') || startsWith(github.event.pull_request.title, 'fix:')))
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -35,11 +35,7 @@ jobs:
       - name: Determine bump type
         id: bump
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            MSG=$(git log -1 --pretty=%s)
-          else
-            MSG="${{ github.event.pull_request.title }}"
-          fi
+          MSG=$(git log -1 --pretty=%s)
 
           if [[ "$MSG" == feat:* ]]; then
             echo "type=minor" >> $GITHUB_OUTPUT
@@ -52,8 +48,8 @@ jobs:
       - name: Abort if no releasable commit
         if: steps.bump.outputs.skip == 'true'
         run: |
-          echo "Last commit is not feat: or fix: — skipping release."
-          exit 1
+          echo "Last commit is not feat: or fix: skipping release."
+          exit 0
 
       - name: Bump version
         id: version
