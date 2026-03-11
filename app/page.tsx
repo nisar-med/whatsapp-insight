@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { 
   MessageSquare, 
@@ -11,8 +11,10 @@ import {
   Loader2, 
   Bot, 
   User,
+  Users,
   Search,
-  RefreshCw
+  RefreshCw,
+  ArrowLeft
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -28,6 +30,35 @@ interface Message {
 interface Chat {
   id: string;
   name?: string;
+}
+
+function isGroupJid(jid: string): boolean {
+  return jid.endsWith('@g.us');
+}
+
+function getConversationName(jid: string, chats: Chat[], messages: Message[]): string {
+  const chat = chats.find(c => c.id === jid);
+  if (chat?.name) return chat.name;
+  if (isGroupJid(jid)) return jid.split('@')[0];
+  const msg = messages.find(m => m.remoteJid === jid);
+  if (msg?.pushName) return msg.pushName;
+  return jid.split('@')[0];
+}
+
+function formatTimestamp(timestamp: number): string {
+  const date = new Date(timestamp * 1000);
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const msgDayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  if (msgDayStart.getTime() === todayStart.getTime()) {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+  const yesterdayStart = new Date(todayStart);
+  yesterdayStart.setDate(yesterdayStart.getDate() - 1);
+  if (msgDayStart.getTime() === yesterdayStart.getTime()) {
+    return 'Yesterday';
+  }
+  return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
 const SESSION_STORAGE_KEY = 'wa_insight_session_id';
@@ -55,8 +86,43 @@ export default function WhatsAppInsights() {
   const [query, setQuery] = useState('');
   const [aiResponse, setAiResponse] = useState<string | null>(null);
   const [isAiLoading, setIsAiLoading] = useState(false);
+  const [selectedConversation, setSelectedConversation] = useState<string | null>(null);
   const socketRef = useRef<Socket | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const conversationEndRef = useRef<HTMLDivElement>(null);
+
+  // Group messages by conversation (remoteJid), sorted by most recent first
+  const conversations = useMemo(() => {
+    const map = new Map<string, { lastMessage: Message; messageCount: number }>();
+    for (const msg of messages) {
+      const existing = map.get(msg.remoteJid);
+      if (!existing) {
+        map.set(msg.remoteJid, { lastMessage: msg, messageCount: 1 });
+      } else {
+        existing.messageCount++;
+        if (msg.timestamp > existing.lastMessage.timestamp) {
+          existing.lastMessage = msg;
+        }
+      }
+    }
+    return Array.from(map.entries())
+      .map(([jid, data]) => ({ jid, ...data }))
+      .sort((a, b) => b.lastMessage.timestamp - a.lastMessage.timestamp);
+  }, [messages]);
+
+  // Messages for the selected conversation in chronological order
+  const conversationMessages = useMemo(() => {
+    if (!selectedConversation) return [];
+    return messages
+      .filter(msg => msg.remoteJid === selectedConversation)
+      .sort((a, b) => a.timestamp - b.timestamp);
+  }, [messages, selectedConversation]);
+
+  // Scroll to the latest message when a conversation is opened or updated
+  useEffect(() => {
+    if (selectedConversation && conversationEndRef.current) {
+      conversationEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [selectedConversation, conversationMessages.length]);
 
   useEffect(() => {
     const sid = getOrCreateSessionId();
@@ -133,6 +199,7 @@ export default function WhatsAppInsights() {
     setQrCode(null);
     setMessages([]);
     setChats([]);
+    setSelectedConversation(null);
     try {
       await fetch(`/api/whatsapp/reset?sid=${encodeURIComponent(sessionId)}`, { method: 'POST' });
     } catch (error) {
@@ -278,44 +345,116 @@ export default function WhatsAppInsights() {
             </div>
           </section>
 
-          {/* Recent Messages Card */}
+          {/* Conversations / Detail Card */}
           <section className="bg-white rounded-2xl shadow-sm border border-black/5 flex flex-col h-[500px]">
-            <div className="p-4 border-b border-black/5 bg-gray-50/50 flex justify-between items-center">
-              <h2 className="font-semibold flex items-center gap-2">
-                <MessageSquare className="w-4 h-4 text-[#00a884]" />
-                Recent Messages
-              </h2>
-              <span className="text-xs font-mono text-gray-400 bg-gray-100 px-2 py-1 rounded">
-                {messages.length} cached
-              </span>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
-              {messages.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-gray-400 space-y-2">
-                  <Search className="w-8 h-8 opacity-20" />
-                  <p className="text-sm">No messages synced yet</p>
-                </div>
-              ) : (
-                messages.map((msg) => (
-                  <motion.div 
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    key={msg.id} 
-                    className="p-3 bg-[#f0f2f5] rounded-lg border border-transparent hover:border-[#00a884]/20 transition-colors"
+            {selectedConversation ? (
+              /* ── Conversation Detail View ── */
+              <>
+                <div className="p-4 border-b border-black/5 bg-gray-50/50 flex items-center gap-3">
+                  <button
+                    onClick={() => setSelectedConversation(null)}
+                    className="p-1.5 rounded-full hover:bg-gray-200 transition-colors shrink-0"
+                    aria-label="Back to conversations"
                   >
-                    <div className="flex justify-between items-start mb-1">
-                      <span className="text-xs font-bold text-[#00a884] truncate max-w-[150px]">
-                        {msg.pushName || msg.remoteJid.split('@')[0]}
-                      </span>
-                      <span className="text-[10px] text-gray-400">
-                        {new Date(msg.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </span>
+                    <ArrowLeft className="w-4 h-4 text-gray-600" />
+                  </button>
+                  <div className={`p-1.5 rounded-full shrink-0 ${isGroupJid(selectedConversation) ? 'bg-purple-100' : 'bg-[#00a884]/10'}`}>
+                    {isGroupJid(selectedConversation)
+                      ? <Users className="w-4 h-4 text-purple-600" />
+                      : <User className="w-4 h-4 text-[#00a884]" />}
+                  </div>
+                  <h2 className="font-semibold flex-1 truncate text-sm">
+                    {getConversationName(selectedConversation, chats, messages)}
+                  </h2>
+                  <span className="text-xs text-gray-400 shrink-0">
+                    {conversationMessages.length} messages
+                  </span>
+                </div>
+                <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
+                  {conversationMessages.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-gray-400 space-y-2">
+                      <MessageSquare className="w-8 h-8 opacity-20" />
+                      <p className="text-sm">No messages in this conversation</p>
                     </div>
-                    <p className="text-sm line-clamp-2 leading-relaxed">{msg.text}</p>
-                  </motion.div>
-                ))
-              )}
-            </div>
+                  ) : (
+                    conversationMessages.map((msg) => (
+                      <motion.div
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        key={msg.id}
+                        className="p-3 bg-[#f0f2f5] rounded-lg border border-transparent hover:border-[#00a884]/20 transition-colors"
+                      >
+                        {isGroupJid(selectedConversation) && (
+                          <span className="text-xs font-bold text-[#00a884] block mb-1">
+                            {msg.pushName || 'Unknown'}
+                          </span>
+                        )}
+                        <div className="flex justify-between items-start gap-2">
+                          <p className="text-sm leading-relaxed flex-1">
+                            {msg.text || <span className="italic text-gray-400">Media message</span>}
+                          </p>
+                          <span className="text-[10px] text-gray-400 shrink-0 mt-0.5">
+                            {new Date(msg.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                      </motion.div>
+                    ))
+                  )}
+                  <div ref={conversationEndRef} />
+                </div>
+              </>
+            ) : (
+              /* ── Conversations List ── */
+              <>
+                <div className="p-4 border-b border-black/5 bg-gray-50/50 flex justify-between items-center">
+                  <h2 className="font-semibold flex items-center gap-2">
+                    <MessageSquare className="w-4 h-4 text-[#00a884]" />
+                    Conversations
+                  </h2>
+                  <span className="text-xs font-mono text-gray-400 bg-gray-100 px-2 py-1 rounded">
+                    {conversations.length} chats
+                  </span>
+                </div>
+                <div className="flex-1 overflow-y-auto custom-scrollbar">
+                  {conversations.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-gray-400 space-y-2">
+                      <Search className="w-8 h-8 opacity-20" />
+                      <p className="text-sm">No conversations yet</p>
+                    </div>
+                  ) : (
+                    conversations.map((conv) => (
+                      <button
+                        key={conv.jid}
+                        onClick={() => setSelectedConversation(conv.jid)}
+                        className="w-full px-4 py-3 flex items-center gap-3 hover:bg-gray-50 transition-colors border-b border-black/5 text-left"
+                      >
+                        <div className={`p-2 rounded-full shrink-0 ${isGroupJid(conv.jid) ? 'bg-purple-100' : 'bg-[#00a884]/10'}`}>
+                          {isGroupJid(conv.jid)
+                            ? <Users className="w-5 h-5 text-purple-600" />
+                            : <User className="w-5 h-5 text-[#00a884]" />}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex justify-between items-center">
+                            <span className="font-medium text-sm truncate">
+                              {getConversationName(conv.jid, chats, messages)}
+                            </span>
+                            <span className="text-[10px] text-gray-400 shrink-0 ml-2">
+                              {formatTimestamp(conv.lastMessage.timestamp)}
+                            </span>
+                          </div>
+                          <p className="text-xs text-gray-500 truncate mt-0.5">
+                            {isGroupJid(conv.jid) && conv.lastMessage.pushName
+                              ? `${conv.lastMessage.pushName}: `
+                              : ''}
+                            {conv.lastMessage.text || '(media)'}
+                          </p>
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
           </section>
         </div>
 
