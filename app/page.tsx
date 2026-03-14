@@ -22,6 +22,7 @@ import { motion, AnimatePresence } from 'motion/react';
 interface Message {
   id: string;
   remoteJid: string;
+  participant: string | null;
   pushName: string;
   text: string;
   timestamp: number;
@@ -32,17 +33,40 @@ interface Chat {
   name?: string;
 }
 
+interface Contact {
+  id: string;
+  name?: string;
+  notify?: string;
+}
+
 function isGroupJid(jid: string): boolean {
   return jid.endsWith('@g.us');
 }
 
-function getConversationName(jid: string, chats: Chat[], messages: Message[]): string {
+function getConversationName(jid: string, chats: Chat[], messages: Message[], contacts: Contact[]): string {
+  if (!isGroupJid(jid)) {
+    const contact = contacts.find(c => c.id === jid);
+    if (contact?.name) return contact.name;
+    if (contact?.notify) return contact.notify;
+  }
   const chat = chats.find(c => c.id === jid);
   if (chat?.name) return chat.name;
   if (isGroupJid(jid)) return jid.split('@')[0];
   const msg = messages.find(m => m.remoteJid === jid);
   if (msg?.pushName) return msg.pushName;
   return jid.split('@')[0];
+}
+
+function getSenderName(msg: Message, contacts: Contact[]): string {
+  const senderJid = msg.participant;
+  if (senderJid) {
+    const contact = contacts.find(c => c.id === senderJid);
+    if (contact?.name) return contact.name;
+    if (contact?.notify) return contact.notify;
+  }
+  if (msg.pushName) return msg.pushName;
+  if (senderJid) return senderJid.split('@')[0];
+  return 'Unknown';
 }
 
 function formatTimestamp(timestamp: number): string {
@@ -82,6 +106,7 @@ export default function WhatsAppInsights() {
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [chats, setChats] = useState<Chat[]>([]);
+  const [contacts, setContacts] = useState<Contact[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [aiResponse, setAiResponse] = useState<string | null>(null);
@@ -161,6 +186,10 @@ export default function WhatsAppInsights() {
       setChats(newChats);
     });
 
+    socket.on('whatsapp:contacts', (newContacts: Contact[]) => {
+      setContacts(newContacts);
+    });
+
     // Initial fetch
     fetch(`/api/whatsapp/messages?sid=${encodeURIComponent(sid)}`)
       .then(res => res.json())
@@ -199,6 +228,7 @@ export default function WhatsAppInsights() {
     setQrCode(null);
     setMessages([]);
     setChats([]);
+    setContacts([]);
     setSelectedConversation(null);
     try {
       await fetch(`/api/whatsapp/reset?sid=${encodeURIComponent(sessionId)}`, { method: 'POST' });
@@ -364,7 +394,7 @@ export default function WhatsAppInsights() {
                       : <User className="w-4 h-4 text-[#00a884]" />}
                   </div>
                   <h2 className="font-semibold flex-1 truncate text-sm">
-                    {getConversationName(selectedConversation, chats, messages)}
+                    {getConversationName(selectedConversation, chats, messages, contacts)}
                   </h2>
                   <span className="text-xs text-gray-400 shrink-0">
                     {conversationMessages.length} messages
@@ -386,7 +416,7 @@ export default function WhatsAppInsights() {
                       >
                         {isGroupJid(selectedConversation) && (
                           <span className="text-xs font-bold text-[#00a884] block mb-1">
-                            {msg.pushName || 'Unknown'}
+                            {getSenderName(msg, contacts)}
                           </span>
                         )}
                         <div className="flex justify-between items-start gap-2">
@@ -436,15 +466,15 @@ export default function WhatsAppInsights() {
                         <div className="flex-1 min-w-0">
                           <div className="flex justify-between items-center">
                             <span className="font-medium text-sm truncate">
-                              {getConversationName(conv.jid, chats, messages)}
+                              {getConversationName(conv.jid, chats, messages, contacts)}
                             </span>
                             <span className="text-[10px] text-gray-400 shrink-0 ml-2">
                               {formatTimestamp(conv.lastMessage.timestamp)}
                             </span>
                           </div>
                           <p className="text-xs text-gray-500 truncate mt-0.5">
-                            {isGroupJid(conv.jid) && conv.lastMessage.pushName
-                              ? `${conv.lastMessage.pushName}: `
+                            {isGroupJid(conv.jid)
+                              ? `${getSenderName(conv.lastMessage, contacts)}: `
                               : ''}
                             {conv.lastMessage.text || '(media)'}
                           </p>

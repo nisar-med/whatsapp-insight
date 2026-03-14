@@ -67,6 +67,7 @@ type WhatsAppSession = {
     qrCode: string | null;
     messageStore: any[];
     chatStore: Record<string, any>;
+    contactStore: Record<string, any>;
     lastActivity: number;
 };
 
@@ -97,6 +98,27 @@ function saveMessageStore(session: WhatsAppSession) {
     } catch (e) {}
 }
 
+function loadContactStore(authPath: string): Record<string, any> {
+    try {
+        const filePath = path.join(authPath, 'contacts.json');
+        if (fs.existsSync(filePath)) {
+            return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        }
+    } catch (e) {}
+    return {};
+}
+
+function saveContactStore(session: WhatsAppSession) {
+    try {
+        if (!fs.existsSync(session.authPath)) return;
+        fs.writeFileSync(
+            path.join(session.authPath, 'contacts.json'),
+            JSON.stringify(session.contactStore),
+            'utf-8'
+        );
+    } catch (e) {}
+}
+
 function getOrCreateSession(sessionId: string): WhatsAppSession {
     const existing = sessions.get(sessionId);
     if (existing) return existing;
@@ -111,6 +133,7 @@ function getOrCreateSession(sessionId: string): WhatsAppSession {
         qrCode: null,
         messageStore: loadMessageStore(authPath),
         chatStore: {},
+        contactStore: loadContactStore(authPath),
         lastActivity: Date.now()
     };
     sessions.set(sessionId, created);
@@ -159,6 +182,7 @@ function extractMessageData(msg: any) {
     return {
         id: msg.key.id,
         remoteJid: msg.key.remoteJid,
+        participant: msg.key.participant ?? null,
         pushName: msg.pushName,
         text,
         timestamp: Number(msg.messageTimestamp)
@@ -269,7 +293,7 @@ async function connectToWhatsApp(sessionId: string, io: Server) {
             }
         });
 
-        session.sock.ev.on('messaging-history.set', ({ messages: historyMessages, chats: historyChats }: any) => {
+        session.sock.ev.on('messaging-history.set', ({ messages: historyMessages, chats: historyChats, contacts: historyContacts }: any) => {
             touchSession(session);
 
             if (historyChats?.length) {
@@ -277,6 +301,14 @@ async function connectToWhatsApp(sessionId: string, io: Server) {
                     session.chatStore[chat.id] = chat;
                 });
                 io.to(getSessionRoom(sessionId)).emit('whatsapp:chats', Object.values(session.chatStore));
+            }
+
+            if (historyContacts?.length) {
+                historyContacts.forEach((contact: any) => {
+                    session.contactStore[contact.id] = contact;
+                });
+                saveContactStore(session);
+                io.to(getSessionRoom(sessionId)).emit('whatsapp:contacts', Object.values(session.contactStore));
             }
 
             if (historyMessages?.length) {
@@ -324,6 +356,16 @@ async function connectToWhatsApp(sessionId: string, io: Server) {
             });
             io.to(getSessionRoom(sessionId)).emit('whatsapp:chats', Object.values(session.chatStore));
         });
+
+        session.sock.ev.on('contacts.upsert', (contacts: any) => {
+            touchSession(session);
+
+            contacts.forEach((contact: any) => {
+                session.contactStore[contact.id] = contact;
+            });
+            saveContactStore(session);
+            io.to(getSessionRoom(sessionId)).emit('whatsapp:contacts', Object.values(session.contactStore));
+        });
     } catch (error) {
         session.isConnecting = false;
         session.status = 'disconnected';
@@ -362,6 +404,7 @@ async function startServer() {
             socket.emit('whatsapp:qr', session.qrCode);
         }
         socket.emit('whatsapp:chats', Object.values(session.chatStore));
+        socket.emit('whatsapp:contacts', Object.values(session.contactStore));
         socket.emit('whatsapp:messages', session.messageStore);
 
         if (!session.sock?.user && !session.isConnecting) {
